@@ -1,18 +1,24 @@
-import { Component, ViewChild, OnInit, Output, EventEmitter, ElementRef, AfterViewInit } from '@angular/core';
-import { Subject } from 'rxjs';
-import WebViewer, { WebViewerInstance } from '@pdftron/webviewer';
+import {
+  Component,
+  ViewChild,
+  OnInit,
+  Output,
+  EventEmitter,
+  ElementRef,
+  AfterViewInit,
+} from "@angular/core";
+import { Subject } from "rxjs";
+import WebViewer, { WebViewerInstance } from "@pdftron/webviewer";
 
 @Component({
-  selector: 'app-root',
-  templateUrl: './app.component.html',
-  styleUrls: ['./app.component.css']
+  selector: "app-root",
+  templateUrl: "./app.component.html",
+  styleUrls: ["./app.component.css"],
 })
 export class AppComponent implements OnInit, AfterViewInit {
-  @ViewChild('viewer') viewer: ElementRef;
-  wvInstance: any;
-  @Output() coreControlsEvent:EventEmitter<string> = new EventEmitter(); 
-  docUrl = "https://journalclub.blob.core.windows.net/journalclub-dev/Organization/1/Article/Library/0/file-example_PDF_1MB.pdf";
-
+  @ViewChild("viewer") viewer: ElementRef;
+  wvInstance: WebViewerInstance;
+  @Output() coreControlsEvent: EventEmitter<string> = new EventEmitter();
   private documentLoaded$: Subject<void>;
 
   constructor() {
@@ -20,125 +26,102 @@ export class AppComponent implements OnInit, AfterViewInit {
   }
 
   ngAfterViewInit(): void {
-
-    WebViewer({
-      path: '../lib',
-      initialDoc: this.docUrl,
-      fullAPI: true
-    }, this.viewer.nativeElement).then(instance => {
+    WebViewer(
+      {
+        path: "../lib",
+        initialDoc: "https://journalclub.blob.core.windows.net/journalclub-dev/Organization/1/Article/Library/0/file-example_PDF_1MB.pdf",
+      },
+      this.viewer.nativeElement
+    ).then(async (instance) => {
       this.wvInstance = instance;
+      const { documentViewer, Annotations, Tools, annotationManager } =
+        instance.Core;
+     let tool= new Tools.Tool(documentViewer);
+     let isInSnipMode = false;
+      const createSnipTool = function () {
+        const SnipTool = function () {
+          Tools.RectangleCreateTool.apply(this, arguments);
+          this.defaults.StrokeColor = new Annotations.Color(0, 255, 0, 0.5);
+          this.defaults.StrokeThickness = 2;
+        };
 
-      this.coreControlsEvent.emit(instance.UI.LayoutMode.Single);
+        SnipTool.prototype = new Tools.RectangleCreateTool(documentViewer);
 
-      const { documentViewer, Annotations, annotationManager } = instance.Core;
+        return new SnipTool();
+      };
 
-      instance.UI.openElements(['notesPanel']);
+      const customSnipTool = createSnipTool();
 
-      documentViewer.addEventListener('annotationsLoaded', () => {
-        console.log('annotations loaded');
+      instance.UI.registerTool({
+        toolName: "SnipTool",
+        toolObject: customSnipTool,
+        buttonImage: "../files/capture.png",
+        buttonName: "snipToolButton",
+        tooltip: "Snipping Tool",
       });
 
-      instance.UI.setHeaderItems((header: any) => {
-        var items = header.getItems();
-
-        // save dropdown start here
-
-        // const { docViewer } = instance;
-        // const parent = docViewer.getScrollViewElement().parentElement;
-        var sniptool = {
-          type: 'actionButton',
-          img: '../files/capture.png',
+      instance.UI.setHeaderItems((header) => {
+        header.push({
+          type: "toolButton",
+          toolName: "SnipTool",
           onClick: () => {
-
-            const tool = documentViewer.getTool(this.wvInstance.Tools.ToolNames.RECTANGLE);            
-            documentViewer.setToolMode(tool);
-          }
-        }
-        items.push(sniptool);
-      })
-
-      documentViewer.addEventListener('documentLoaded', () => {
-        this.documentLoaded$.next();
-        const rectangleAnnot = new Annotations.RectangleAnnotation({
-          PageNumber: 1,
-          // values are in page coordinates with (0, 0) in the top left
-          X: 100,
-          Y: 150,
-          Width: 200,
-          Height: 50,
-          Author: annotationManager.getCurrentUser()
+            tool = documentViewer.getToolMode();
+            isInSnipMode = true;
+            const rectangleTool = documentViewer.getTool(
+              this.wvInstance.Core.Tools.ToolNames.RECTANGLE
+            );
+            documentViewer.setToolMode(rectangleTool);
+          },
         });
-        annotationManager.addAnnotation(rectangleAnnot);
-        annotationManager.redrawAnnotation(rectangleAnnot);
-
-        annotationManager.addEventListener('annotationChanged', (annotations: any, action: any, imported: any) => {
-       
-          if (action === 'add') {
-            this.annotationChangedFn(annotations, action, imported);
-            console.log('this is a change that added annotations');
-          } else if (action === 'modify') {
-            console.log('this change modified annotations');
-          } else if (action === 'delete') {
-            console.log('there were annotations deleted');
-          }
-        })  
       });
-      
-    })
+
+      const downloadURI = (uri, name) => {
+        const link = document.createElement("a");
+        link.download = name;
+        link.href = uri;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+      };
+
+      annotationManager.addEventListener("annotationChanged", (annotations,action) => {
+        if (isInSnipMode && annotations.length > 0) {
+          const annotation = annotations[0];
+          const pageNumber = annotation.PageNumber;
+
+          const pageContainer = instance.UI.iframeWindow.document.getElementById('pageContainer' + pageNumber);
+          const pageCanvas = pageContainer.querySelector('.canvas' + pageNumber) as HTMLElement;
+          const pageCanvas2 = pageContainer.querySelector('.auxiliary') as HTMLElement;
+
+          const scale = window.devicePixelRatio
+          const topOffset = (parseFloat(pageCanvas.style.top) || 0) * scale;
+          const leftOffset = (parseFloat(pageCanvas.style.left) || 0) *  scale;
+          const zoom = documentViewer.getZoomLevel() * scale;
+
+          const x = annotation.X * zoom - leftOffset;
+          const y = annotation.Y * zoom - topOffset;
+          const width = annotation.Width * zoom;
+          const height = annotation.Height * zoom;
+
+          const copyCanvas = document.createElement('canvas');
+          copyCanvas.width = width;
+          copyCanvas.height = height;
+          const ctx = copyCanvas.getContext('2d');
+          
+          ctx.drawImage(pageCanvas as CanvasImageSource, x, y, width, height, 0, 0, width, height);
+          ctx.drawImage(pageCanvas2 as CanvasImageSource, x, y, width, height, 0, 0, width, height);
+          downloadURI(copyCanvas.toDataURL(), "snippet.png");
+
+          annotationManager.deleteAnnotation(annotation);
+          documentViewer.setToolMode(tool);
+          isInSnipMode = false;
+        }
+      });
+
+    });
   }
 
-  async annotationChangedFn(annotations: any, action: any, imported: any) {
-    const { documentViewer } = this.wvInstance.Core;
-    const { docViewer, Annotations, Tools, iframeWindow, annotManager } = this.wvInstance;
-    const document = this.wvInstance.UI.iframeWindow.document;
-    // do the await things here.
-    const downloadURI = (uri: any, name: any) => {
-      
-      const link = document.createElement("a");
-      link.download = name;
-      link.href = uri;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-    }
-    if (annotations && annotations.length > 0 && annotations[0].ToolName == 'AnnotationCreateRectangle' ) {    
-      var annotation = annotations[0];
-      const pageIndex = annotation.PageNumber;
-      // get the canvas for the page
-      const pageContainer = iframeWindow.document.getElementById('pageContainer' + pageIndex);
-      const pageCanvas = pageContainer.querySelector('.canvas' + pageIndex);
-      // var pageCanvas:any = iframeWindow.document.querySelector('.auxiliary');
-      
-      const topOffset = parseFloat(pageCanvas?.style.top) || 0;
-      const leftOffset = parseFloat(pageCanvas?.style.left) || 0;
-      const zoom = docViewer.getZoom();
-
-      const x = annotation.X * zoom - leftOffset;
-      const y = annotation.Y * zoom - topOffset;
-      const width = annotation.Width * (zoom + 0.5);
-      const height = annotation.Height * (zoom + 0.4);
-
-      const copyCanvas = document.createElement('canvas');
-      copyCanvas.width = width;
-      copyCanvas.height = height;
-      const ctx = copyCanvas.getContext('2d');
-      // copy the image data from the page to a new canvas so we can get the data URL
-      ctx.drawImage(pageCanvas, x, y, width, height, 0, 0, width, height);
-      await downloadURI(copyCanvas.toDataURL(), "snippet.png");
-  
-      
-
-      annotManager.deleteAnnotation(annotation);
-      const tool = documentViewer.getTool(this.wvInstance.Tools.ToolNames.EDIT);
-      // tool.enableImmediateActionOnAnnotationSelection();
-      documentViewer.setToolMode(tool);
-    }
-  }
-
-  ngOnInit() {
-  }
-
-
+  ngOnInit() {}
 
   getDocumentLoadedObservable() {
     return this.documentLoaded$.asObservable();
